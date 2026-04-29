@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Security, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from typing_extensions import Annotated
 
 from pocket_tts.data.audio import stream_audio_chunks
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-def verify_api_key(api_key: str = Security(_api_key_header)):
+def verify_api_key(api_key: str | None = Security(_api_key_header)):
     expected = os.environ.get("POCKET_TTS_API_KEY")
     if not expected:
         return  # auth disabled — no key configured
@@ -101,7 +102,7 @@ async def health():
 # ------------------------------------------------------
 
 def _load_voice_state_from_source(
-    voice_url: str | None, voice_wav: UploadFile | None
+    voice_url: str | None, voice_wav: StarletteUploadFile | None
 ) -> dict:
     """Compute and return a model_state from a URL or uploaded file."""
     if voice_url is not None:
