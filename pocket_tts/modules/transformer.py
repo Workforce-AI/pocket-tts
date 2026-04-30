@@ -118,12 +118,13 @@ class StreamingMultiheadAttention(StatefulModule):
         self.out_proj = nn.Linear(embed_dim, mult * embed_dim, bias=False)
 
     def init_state(self, batch_size: int, sequence_length: int) -> dict[str, torch.Tensor]:
-        # torch.ao quantized Linear exposes .weight as a method, not a tensor attribute
+        # torch.ao quantized Linear exposes .weight as a callable returning a qint8 tensor.
+        # The KV cache stores float activations, so always use a float dtype.
         w = self.in_proj.weight
         if callable(w):
             w = w()
         device = w.device
-        dtype = w.dtype
+        dtype = w.dtype if w.is_floating_point() else torch.float32
         return self._cache_backend.init_state(batch_size, sequence_length, device, dtype)
 
     def increment_step(self, state: dict, increment: int = 1):
