@@ -82,10 +82,15 @@ web_app.add_middleware(
 
 @web_app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the frontend."""
-    static_path = Path(__file__).parent / "static" / "index.html"
+    """Serve the API test console."""
+    return (Path(__file__).parent / "static" / "index.html").read_text()
+
+
+@web_app.get("/legacy", response_class=HTMLResponse)
+async def legacy_ui():
+    """Serve the original upstream TTS UI."""
+    static_path = Path(__file__).parent / "static" / "legacy.html"
     content = static_path.read_text()
-    print(str(tts_model.origin))
     content = content.replace(
         "DEFAULT_TEXT_PROMPT", get_default_text_for_language(str(tts_model.origin))
     )
