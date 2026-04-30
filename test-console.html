@@ -245,7 +245,7 @@ audio { width: 100%; margin-top: 12px; border-radius: 6px; }
     <div>
       <div class="card">
         <div class="card-title">Text</div>
-        <textarea id="t-text" rows="5" style="width:100%;resize:vertical" placeholder="Enter text to synthesize…"></textarea>
+        <textarea id="t-text" rows="5" style="width:100%;resize:vertical" placeholder="Enter text to synthesize…">Mario Costanz is one of the most successful entrepreneurs and authors operate in the tax preparation industry. He has pioneered many areas, including virtual tax prep, crypto taxes, and AI-assisted taxes.</textarea>
       </div>
 
       <div class="card">
@@ -427,6 +427,68 @@ audio { width: 100%; margin-top: 12px; border-radius: 6px; }
 
 <script>
 'use strict';
+
+// ── StreamingWavPlayer (ported from legacy UI) ────────────────────────────────
+class StreamingWavPlayer {
+    constructor() {
+        this.audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'playback' });
+        this.sampleRate = 0;
+        this.numChannels = 0;
+        this.headerParsed = false;
+        this.headerBuffer = new Uint8Array(44);
+        this.headerBytesReceived = 0;
+        this.nextStartTime = 0;
+        this.minBufferSize = 16384;
+        this.pcmData = new Uint8Array(0);
+    }
+    _appendPcm(data) {
+        const buf = new Uint8Array(this.pcmData.length + data.length);
+        buf.set(this.pcmData); buf.set(data, this.pcmData.length);
+        this.pcmData = buf;
+    }
+    _scheduleBuffer(minSize) {
+        if (!this.headerParsed || this.pcmData.length < minSize) return;
+        const bps = this.numChannels * 2;
+        const frames = Math.floor(this.pcmData.length / bps);
+        if (!frames) return;
+        const bytes = frames * bps;
+        const slice = this.pcmData.slice(0, bytes);
+        this.pcmData = this.pcmData.slice(bytes);
+        const audioBuf = this.audioContext.createBuffer(this.numChannels, frames, this.sampleRate);
+        const int16 = new Int16Array(slice.buffer, slice.byteOffset, frames * this.numChannels);
+        for (let ch = 0; ch < this.numChannels; ch++) {
+            const out = audioBuf.getChannelData(ch);
+            for (let i = 0; i < frames; i++) out[i] = int16[i * this.numChannels + ch] / 32768;
+        }
+        const src = this.audioContext.createBufferSource();
+        src.buffer = audioBuf;
+        src.connect(this.audioContext.destination);
+        const when = Math.max(this.audioContext.currentTime, this.nextStartTime);
+        src.start(when);
+        this.nextStartTime = when + audioBuf.duration;
+        if (this.pcmData.length >= this.minBufferSize) setTimeout(() => this._scheduleBuffer(this.minBufferSize), 10);
+    }
+    addChunk(chunk) {
+        if (!this.headerParsed) {
+            const needed = 44 - this.headerBytesReceived;
+            const toCopy = Math.min(needed, chunk.length);
+            this.headerBuffer.set(chunk.slice(0, toCopy), this.headerBytesReceived);
+            this.headerBytesReceived += toCopy;
+            if (this.headerBytesReceived >= 44) {
+                const v = new DataView(this.headerBuffer.buffer);
+                this.numChannels = v.getUint16(22, true);
+                this.sampleRate  = v.getUint32(24, true);
+                this.headerParsed = true;
+                if (chunk.length > toCopy) this._appendPcm(chunk.slice(toCopy));
+            }
+        } else {
+            this._appendPcm(chunk);
+        }
+        this._scheduleBuffer(this.minBufferSize);
+    }
+    flush() { this._scheduleBuffer(0); }  // play whatever's left at end of stream
+    stop()  { this.audioContext.close(); }
+}
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -685,6 +747,8 @@ async function generateTts() {
   _abort = new AbortController();
   const t0 = performance.now();
   let firstMs = null, totalBytes = 0, chunks = 0;
+  // Instantiate before the first await so AudioContext is created inside the user-gesture stack.
+  const wavPlayer = fmt === 'wav' ? new StreamingWavPlayer() : null;
 
   try {
     const res = await fetch(`${cfg.url}/tts`, {
@@ -720,19 +784,20 @@ async function generateTts() {
         setMv('m-chunks', chunks); setMv('m-bytes', fmtBytes(totalBytes));
       }
     } else {
+      document.getElementById('t-audio-sec').style.display = 'block';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         if (firstMs === null) { firstMs = performance.now() - t0; setMv('m-first', firstMs.toFixed(0)); }
         totalBytes += value.length; chunks++;
         wavChunks.push(value);
+        wavPlayer.addChunk(value);
         setMv('m-chunks', chunks); setMv('m-bytes', fmtBytes(totalBytes));
       }
+      wavPlayer.flush(); // play any remaining PCM below the minimum buffer threshold
       const blob = new Blob(wavChunks, { type: 'audio/wav' });
       const au = document.getElementById('t-audio');
-      au.src = URL.createObjectURL(blob);
-      document.getElementById('t-audio-sec').style.display = 'block';
-      au.play().catch(() => {});
+      au.src = URL.createObjectURL(blob); // available for replay after stream ends
     }
 
     const totalMs = (performance.now() - t0).toFixed(0);
@@ -740,6 +805,7 @@ async function generateTts() {
     setPill('t-pill', 'ok', `done ${totalMs}ms`);
 
   } catch (e) {
+    if (wavPlayer) wavPlayer.stop();
     if (e.name === 'AbortError') {
       setPill('t-pill', 'idle', 'stopped');
     } else {
